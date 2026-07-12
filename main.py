@@ -56,8 +56,9 @@ THINKING_LEVEL = os.getenv("THINKING_LEVEL", "minimal")
 
 # Hard cap on how long we'll wait for Gemini before giving up, so a slow
 # call fails fast and visibly in the logs instead of silently eating the
-# grader's entire 12s budget.
-GEMINI_TIMEOUT_MS = int(os.getenv("GEMINI_TIMEOUT_MS", "8000"))
+# grader's entire 12s budget. Gemini's API rejects any deadline under 10s
+# (returns 400 INVALID_ARGUMENT), so 10000 is the practical floor here.
+GEMINI_TIMEOUT_MS = int(os.getenv("GEMINI_TIMEOUT_MS", "10000"))
 
 # ASSUMPTION: rounding precision for all numeric outputs. Change if the
 # grader expects a different precision.
