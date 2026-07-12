@@ -99,7 +99,13 @@ def extract_table_from_audio(audio_bytes: bytes, mime_type: str) -> Dict[str, An
                 ],
             }
         ],
-        config={"response_mime_type": "application/json"},
+        config={
+            "response_mime_type": "application/json",
+            # This is pure transcription + extraction, not hard reasoning —
+            # minimal thinking cuts latency substantially, which matters
+            # since the grader enforces a 12-second timeout.
+            "thinking_config": {"thinking_level": "minimal"},
+        },
     )
 
     text = response.text
