@@ -42,6 +42,12 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 client = genai.Client(api_key=GEMINI_API_KEY)
 MODEL_NAME = "gemini-3.5-flash"
 
+# "minimal" is fastest but sacrifices transcription accuracy (observed
+# hallucinated placeholder column names at this setting). "low" trades a
+# bit of latency for materially better audio comprehension. Tune via env
+# var without a code change if you hit the grader's 12s timeout again.
+THINKING_LEVEL = os.getenv("THINKING_LEVEL", "low")
+
 # ASSUMPTION: rounding precision for all numeric outputs. Change if the
 # grader expects a different precision.
 ROUND_DECIMALS = 4
@@ -55,6 +61,17 @@ Your job is ONLY to transcribe and extract the raw data faithfully. Do NOT
 compute any statistics, summaries, or interpretations. Do NOT round or alter
 any numbers you hear — reproduce them exactly as spoken (convert spoken
 Korean numbers to digit form, e.g. "이십오" -> "25").
+
+CRITICAL: Use the EXACT column name spoken in the audio, verbatim. Never
+invent, guess, or fall back to a generic placeholder name such as "값"
+(value), "열" (column), "데이터" (data), "항목" (item), or similar filler
+words, unless that literal word is explicitly used as a proper column label
+in the recording. If you genuinely cannot make out a column name after
+careful listening, use "unknown_column_<n>" instead of a plausible-sounding
+guess, so a downstream mistake is easy to detect rather than silently wrong.
+
+Listen to the entire clip carefully before transcribing — do not truncate or
+skip any part of the audio, even if it is short.
 
 Return ONLY a JSON object with this exact shape:
 {
@@ -74,6 +91,8 @@ def detect_mime_type(raw: bytes) -> str:
         return "audio/mp3"
     if raw[:4] == b"OggS":
         return "audio/ogg"
+    if raw[:4] == b"\x1a\x45\xdf\xa3":
+        return "audio/webm"  # WebM/Opus, common for browser-recorded audio
     if raw[4:8] == b"ftyp":
         return "audio/mp4"  # m4a/aac container
     if raw[:4] == b"fLaC":
@@ -102,9 +121,10 @@ def extract_table_from_audio(audio_bytes: bytes, mime_type: str) -> Dict[str, An
         config={
             "response_mime_type": "application/json",
             # This is pure transcription + extraction, not hard reasoning —
-            # minimal thinking cuts latency substantially, which matters
-            # since the grader enforces a 12-second timeout.
-            "thinking_config": {"thinking_level": "minimal"},
+            # low thinking cuts latency vs default while preserving more
+            # accuracy than minimal, which matters given the grader's
+            # 12-second timeout AND the accuracy issue seen on q10.
+            "thinking_config": {"thinking_level": THINKING_LEVEL},
         },
     )
 
@@ -124,17 +144,31 @@ def round_val(x):
     return round(float(x), ROUND_DECIMALS)
 
 
+def is_numeric_column(values: List[str], min_numeric_fraction: float = 0.9) -> bool:
+    """Independently decide if a column is numeric, instead of trusting
+    Gemini's own "numeric"/"categorical" tag. A tagging mistake (or a
+    hallucinated/garbled column) should not corrupt the stats dicts —
+    if most values don't actually parse as numbers, treat it as
+    categorical regardless of what the model claimed."""
+    if not values:
+        return False
+    parsed = to_numeric_series(values)
+    fraction_numeric = parsed.notna().mean()
+    return fraction_numeric >= min_numeric_fraction
+
+
 def build_stats(extracted: Dict[str, Any]) -> Dict[str, Any]:
     columns_meta = extracted["columns"]
     rows = extracted["rows"]
 
     col_names = [c["name"] for c in columns_meta]
-    col_types = {c["name"]: c["type"] for c in columns_meta}
 
     df = pd.DataFrame(rows, columns=col_names)
 
-    numeric_cols = [c for c in col_names if col_types.get(c) == "numeric"]
-    categorical_cols = [c for c in col_names if col_types.get(c) != "numeric"]
+    # Re-derive numeric/categorical from the actual data, not from
+    # Gemini's self-reported "type" field (see is_numeric_column docstring).
+    numeric_cols = [c for c in col_names if is_numeric_column(df[c].tolist())]
+    categorical_cols = [c for c in col_names if c not in numeric_cols]
 
     mean_d, std_d, var_d = {}, {}, {}
     min_d, max_d, median_d, mode_d, range_d = {}, {}, {}, {}, {}
