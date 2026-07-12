@@ -1,5 +1,5 @@
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
-google-genai==1.20.0
+google-genai==2.11.0
 pandas==2.2.3
 numpy==1.26.4
