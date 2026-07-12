@@ -65,22 +65,35 @@ GEMINI_TIMEOUT_MS = int(os.getenv("GEMINI_TIMEOUT_MS", "10000"))
 ROUND_DECIMALS = 4
 
 EXTRACTION_SYSTEM_PROMPT = """You will be given a short Korean-language audio clip.
-The speaker describes a small dataset: a set of named columns and a number of
-data rows, each row giving a value for every column. Some columns are numeric
-(numbers), others are categorical (text labels).
+The speaker MAY describe a small dataset: a set of named columns and a number
+of data rows, each row giving a value for every column. Some columns are
+numeric (numbers), others are categorical (text labels).
 
-Your job is ONLY to transcribe and extract the raw data faithfully. Do NOT
-compute any statistics, summaries, or interpretations. Do NOT round or alter
-any numbers you hear — reproduce them exactly as spoken (convert spoken
-Korean numbers to digit form, e.g. "이십오" -> "25").
+IMPORTANT: Do not assume the audio necessarily contains a valid data table.
+If, after listening carefully to the entire clip, you cannot clearly identify
+real column names and real row values actually spoken (for example: the audio
+is silence, noise, unrelated speech, or too unclear to make out any concrete
+column/value pairs), return an EMPTY result instead of guessing or inventing
+placeholder content:
+{"columns": [], "rows": []}
+
+Do NOT fabricate a column just to have something to return. A wrong empty
+result is far better than a confident but made-up column.
+
+If a real table IS present, your job is ONLY to transcribe and extract the
+raw data faithfully. Do NOT compute any statistics, summaries, or
+interpretations. Do NOT round or alter any numbers you hear — reproduce them
+exactly as spoken (convert spoken Korean numbers to digit form, e.g.
+"이십오" -> "25").
 
 CRITICAL: Use the EXACT column name spoken in the audio, verbatim. Never
 invent, guess, or fall back to a generic placeholder name such as "값"
 (value), "열" (column), "데이터" (data), "항목" (item), or similar filler
 words, unless that literal word is explicitly used as a proper column label
-in the recording. If you genuinely cannot make out a column name after
-careful listening, use "unknown_column_<n>" instead of a plausible-sounding
-guess, so a downstream mistake is easy to detect rather than silently wrong.
+in the recording. If you genuinely cannot make out a specific column name but
+you ARE confident real tabular data exists, use "unknown_column_<n>" instead
+of a plausible-sounding guess. If you are not even confident a table exists
+at all, use the empty result shown above instead.
 
 Listen to the entire clip carefully before transcribing — do not truncate or
 skip any part of the audio, even if it is short.
