@@ -19,7 +19,9 @@ Pipeline:
 
 import base64
 import json
+import logging
 import os
+import time
 from typing import Any, Dict, List
 
 import numpy as np
@@ -28,6 +30,9 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from google import genai
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("audio-qa")
 
 app = FastAPI()
 
@@ -42,11 +47,17 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 client = genai.Client(api_key=GEMINI_API_KEY)
 MODEL_NAME = "gemini-3.5-flash"
 
-# "minimal" is fastest but sacrifices transcription accuracy (observed
-# hallucinated placeholder column names at this setting). "low" trades a
-# bit of latency for materially better audio comprehension. Tune via env
-# var without a code change if you hit the grader's 12s timeout again.
-THINKING_LEVEL = os.getenv("THINKING_LEVEL", "low")
+# Reverted to "minimal" as the default: the accuracy fixes that mattered
+# (strict prompt against placeholder names, independent numeric
+# re-validation) are latency-free, so they still apply at "minimal". Bump
+# to "low"/"medium" via env var only if accuracy issues persist AND you've
+# confirmed via the timing logs below that you have latency budget to spare.
+THINKING_LEVEL = os.getenv("THINKING_LEVEL", "minimal")
+
+# Hard cap on how long we'll wait for Gemini before giving up, so a slow
+# call fails fast and visibly in the logs instead of silently eating the
+# grader's entire 12s budget.
+GEMINI_TIMEOUT_MS = int(os.getenv("GEMINI_TIMEOUT_MS", "8000"))
 
 # ASSUMPTION: rounding precision for all numeric outputs. Change if the
 # grader expects a different precision.
@@ -102,6 +113,7 @@ def detect_mime_type(raw: bytes) -> str:
 
 
 def extract_table_from_audio(audio_bytes: bytes, mime_type: str) -> Dict[str, Any]:
+    t0 = time.monotonic()
     response = client.models.generate_content(
         model=MODEL_NAME,
         contents=[
@@ -120,13 +132,12 @@ def extract_table_from_audio(audio_bytes: bytes, mime_type: str) -> Dict[str, An
         ],
         config={
             "response_mime_type": "application/json",
-            # This is pure transcription + extraction, not hard reasoning —
-            # low thinking cuts latency vs default while preserving more
-            # accuracy than minimal, which matters given the grader's
-            # 12-second timeout AND the accuracy issue seen on q10.
             "thinking_config": {"thinking_level": THINKING_LEVEL},
+            "http_options": {"timeout": GEMINI_TIMEOUT_MS},
         },
     )
+    elapsed = time.monotonic() - t0
+    logger.info(f"gemini_call_seconds={elapsed:.2f} thinking_level={THINKING_LEVEL}")
 
     text = response.text
     return json.loads(text)
@@ -227,14 +238,29 @@ def build_stats(extracted: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def handle_audio_request(request: Request) -> JSONResponse:
+    request_start = time.monotonic()
+
     body = await request.json()
     audio_b64 = body["audio_base64"]
+    audio_id = body.get("audio_id", "unknown")
 
     raw_bytes = base64.b64decode(audio_b64)
     mime_type = detect_mime_type(raw_bytes)
+    logger.info(f"audio_id={audio_id} bytes={len(raw_bytes)} mime_type={mime_type}")
 
+    t_extract = time.monotonic()
     extracted = extract_table_from_audio(raw_bytes, mime_type)
+    extract_elapsed = time.monotonic() - t_extract
+
+    t_stats = time.monotonic()
     result = build_stats(extracted)
+    stats_elapsed = time.monotonic() - t_stats
+
+    total_elapsed = time.monotonic() - request_start
+    logger.info(
+        f"audio_id={audio_id} extract_seconds={extract_elapsed:.2f} "
+        f"stats_seconds={stats_elapsed:.3f} total_seconds={total_elapsed:.2f}"
+    )
 
     response = JSONResponse(content=result)
     response.headers["Access-Control-Allow-Origin"] = "*"
